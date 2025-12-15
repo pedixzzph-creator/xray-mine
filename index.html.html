@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>2D Платформер</title>
+    <!-- Завантажуємо Tailwind CSS для стилізації інтерфейсу -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Стилі для основного контейнера та центрування */
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            background-color: #1e293b; /* Сірий фон */
+            color: #f8fafc;
+            font-family: 'Inter', sans-serif;
+            padding: 10px;
+        }
+
+        /* Стилі для Canvas */
+        #gameCanvas {
+            border: 4px solid #334155;
+            background-color: #64748b;
+            box-shadow: 0 10px 20px rgba(0, 0, 0, 0.5);
+            max-width: 90vw; /* Максимальна ширина для мобільних */
+            max-height: 70vh; /* Максимальна висота */
+            display: block;
+            margin-bottom: 20px;
+            border-radius: 12px;
+            cursor: crosshair; /* Курсор, щоб показати, що можна натискати */
+        }
+
+        /* Стилі для кнопок управління */
+        .control-button {
+            @apply p-4 m-2 text-xl font-bold bg-indigo-600 text-white rounded-xl shadow-lg transition duration-150 ease-in-out;
+            touch-action: manipulation; /* Покращує реакцію на дотик */
+            width: 80px;
+            height: 80px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .control-button:active {
+            @apply bg-indigo-700 shadow-xl scale-95;
+        }
+
+        /* Приховати кнопки на великих екранах */
+        @media (min-width: 768px) {
+            #mobile-controls {
+                display: none;
+            }
+        }
+    </style>
+</head>
+<body>
+
+    <h1 class="text-3xl font-extrabold mb-4 text-white">Простий 2D Платформер</h1>
+    <p class="text-sm mb-4 text-gray-300">Керування: Стрілки (←, →), Пробіл/↑ для стрибка. **Атака: ЛКМ або Z (знищуйте зомбі!)**.</p>
+
+    <!-- Ігровий Canvas -->
+    <canvas id="gameCanvas"></canvas>
+
+    <!-- Мобільні елементи керування (приховані на десктопі) -->
+    <div id="mobile-controls" class="flex flex-col items-center mt-4">
+        <button id="jumpButton" class="control-button mb-4">↑</button>
+        <div class="flex">
+            <button id="leftButton" class="control-button mr-2">←</button>
+            <button id="attackButton" class="control-button text-sm bg-red-600 hover:bg-red-700 mx-2">Атака</button>
+            <button id="rightButton" class="control-button ml-2">→</button>
+        </div>
+    </div>
+    
+    <!-- Кнопка перезапуску гри (Спочатку прихована) -->
+    <button id="restartButton" class="hidden mt-4 p-3 bg-green-500 hover:bg-green-600 text-white font-bold rounded-xl shadow-lg transition duration-150 ease-in-out">
+        Начать заново (R)
+    </button>
+
+    <script type="module">
+        // Отримуємо посилання на Canvas та його контекст
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+
+        // Змінні для розмірів Canvas
+        let canvasWidth, canvasHeight;
+
+        // --- КОНСТАНТИ ГРИ ---
+        const GAME_SPEED = 5;
+        const JUMP_POWER = 15;
+        const GRAVITY = 0.8;
+        const PLAYER_SIZE_RATIO = 0.05; 
+        const ATTACK_DURATION = 15; 
+
+        // КОНСТАНТИ HP
+        const PLAYER_MAX_HP = 15; // Максимальне здоров'я гравця
+        const ZOMBIE_MAX_HP = 20; // Максимальне здоров'я зомбі
+        const PLAYER_DAMAGE = 10; // Шкода меча гравця
+        const ZOMBIE_DAMAGE = 5; // Шкода зомбі
+        const PLAYER_INVULNERABILITY_DURATION = 90; // 1.5 секунди невидимості (кадри)
+
+        // КОНСТАНТИ ЗОМБІ
+        const ZOMBIE_SPAWN_INTERVAL = 5000; // 5000 мс = 5 секунд
+        const ZOMBIE_SPEED = 0.5;
+        const ZOMBIE_SIZE_RATIO = 0.04;
+        
+        // --- СТАН ГРИ ---
+        let lastZombieSpawnTime = 0;
+        let zombies = [];
+        let zombiesKilled = 0; // Новий лічильник вбитих зомбі
+
+
+        // Об'єкт гравця
+        const player = {
+            x: 0,
+            y: 0,
+            width: 0,
+            height: 0,
+            vx: 0, 
+            vy: 0, 
+            isJumping: false,
+            isGrounded: false,
+            color: '#fcd34d', 
+            facingDirection: 1, // 1: праворуч, -1: ліворуч
+            attackTimer: 0, 
+            swordColor: '#9ca3af',
+            hp: PLAYER_MAX_HP, // Початкове здоров'я
+            maxHp: PLAYER_MAX_HP,
+            invulnerabilityTimer: 0, // Таймер невидимості
+            isDead: false,
+        };
+
+        // Стан клавіатури
+        const keys = {
+            left: false,
+            right: false,
+            jump: false,
+            attack: false 
+        };
+
+        // Функція для налаштування розміру Canvas
+        function resizeCanvas() {
+            // Встановлюємо співвідношення сторін 16:9
+            const aspectRatio = 16 / 9;
+            canvasWidth = Math.min(window.innerWidth * 0.9, 1280); 
+            canvasHeight = canvasWidth / aspectRatio;
+
+            if (canvasHeight > window.innerHeight * 0.7) {
+                canvasHeight = window.innerHeight * 0.7;
+                canvasWidth = canvasHeight * aspectRatio;
+            }
+
+            canvas.width = canvasWidth;
+            canvas.height = canvasHeight;
+
+            // Оновлюємо розміри гравця
+            player.width = canvasHeight * PLAYER_SIZE_RATIO;
+            player.height = canvasHeight * PLAYER_SIZE_RATIO * 1.5; 
+            
+            if (player.x === 0 && player.y === 0 || player.isDead) { // Перепозиціонуємо лише при старті
+                player.x = canvasWidth / 2 - player.width / 2;
+                player.y = canvasHeight - player.height - (canvasHeight * 0.1); 
+            }
+        }
+
+        // Ініціалізація та обробка зміни розміру вікна
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // 1. Функція скидання гри
+        function resetGame() {
+            // Скидання позиції та стану гравця
+            player.x = canvasWidth / 2 - player.width / 2;
+            player.y = canvasHeight - player.height - (canvasHeight * 0.1); 
+            player.vx = 0;
+            player.vy = 0;
+            player.hp = player.maxHp;
+            player.isDead = false;
+            player.invulnerabilityTimer = 0;
+            
+            // Скидання зомбі та лічильника
+            zombies = [];
+            zombiesKilled = 0;
+            lastZombieSpawnTime = performance.now();
+
+            // Приховуємо кнопку рестарту
+            document.getElementById('restartButton').classList.add('hidden');
+        }
+
+        // 2. Обробка введення з клавіатури
+        document.addEventListener('keydown', (e) => {
+            if (e.code === 'ArrowLeft') keys.left = true;
+            if (e.code === 'ArrowRight') keys.right = true;
+            if (e.code === 'Space' || e.code === 'ArrowUp') {
+                if (!keys.jump) { 
+                    keys.jump = true;
+                }
+            }
+            // Клавіша для атаки (Z)
+            if (e.code === 'KeyZ' && player.attackTimer === 0 && !player.isDead) {
+                keys.attack = true;
+            }
+
+            // Клавіша R для рестарту
+            if (e.code === 'KeyR' && player.isDead) {
+                resetGame();
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            if (e.code === 'ArrowLeft') keys.left = false;
+            if (e.code === 'ArrowRight') keys.right = false;
+            if (e.code === 'Space' || e.code === 'ArrowUp') keys.jump = false;
+            // Скидаємо прапорець атаки
+            if (e.code === 'KeyZ') keys.attack = false;
+        });
+        
+        // Атака по кліку миші (ЛКМ) або дотику (тапу) на Canvas
+        canvas.addEventListener('mousedown', (e) => {
+            if (e.button === 0 && player.attackTimer === 0 && !player.isDead) {
+                keys.attack = true;
+            }
+        });
+        
+        canvas.addEventListener('touchstart', (e) => {
+            e.preventDefault(); 
+            if (player.attackTimer === 0 && !player.isDead) {
+                keys.attack = true;
+            }
+        });
+        
+        // Обробка кнопки рестарту
+        document.getElementById('restartButton').addEventListener('click', resetGame);
+
+
+        // 3. Обробка введення з мобільних кнопок
+        const leftButton = document.getElementById('leftButton');
+        const rightButton = document.getElementById('rightButton');
+        const jumpButton = document.getElementById('jumpButton');
+        const attackButton = document.getElementById('attackButton'); 
+
+        function setupTouchControls() {
+            const pressHandler = (keyState) => (e) => {
+                e.preventDefault();
+                keyState.left = (e.target.id === 'leftButton');
+                keyState.right = (e.target.id === 'rightButton');
+            };
+
+            const releaseHandler = (keyState) => (e) => {
+                e.preventDefault();
+                keyState.left = false;
+                keyState.right = false;
+            };
+
+            const handleJump = () => {
+                if (!keys.jump) keys.jump = true;
+            };
+
+            const handleAttack = () => {
+                if (player.attackTimer === 0 && !player.isDead) {
+                    keys.attack = true;
+                }
+            };
+
+            [leftButton, rightButton].forEach(btn => {
+                btn.addEventListener('mousedown', pressHandler(keys));
+                btn.addEventListener('mouseup', releaseHandler(keys));
+                btn.addEventListener('touchstart', pressHandler(keys));
+                btn.addEventListener('touchend', releaseHandler(keys));
+            });
+
+            jumpButton.addEventListener('click', handleJump);
+            jumpButton.addEventListener('touchstart', (e) => { e.preventDefault(); handleJump(); });
+
+            attackButton.addEventListener('click', handleAttack);
+            attackButton.addEventListener('touchstart', (e) => { e.preventDefault(); handleAttack(); });
+        }
+        setupTouchControls();
+
+
+        // --- ЛОГІКА ЗОМБІ ---
+
+        function spawnZombie() {
+            // Рандомна позиція, але завжди на землі (ліворуч або праворуч)
+            const zombieWidth = canvasHeight * ZOMBIE_SIZE_RATIO;
+            const zombieHeight = zombieWidth * 1.5;
+            const groundLevel = canvasHeight * 0.9; 
+            
+            // Вибираємо випадкову сторону для спавну (0: ліворуч, 1: праворуч)
+            const side = Math.random() < 0.5 ? 0 : canvasWidth - zombieWidth; 
+
+            zombies.push({
+                x: side,
+                y: groundLevel - zombieHeight,
+                width: zombieWidth,
+                height: zombieHeight,
+                color: '#22c55e', // Зелений колір зомбі
+                speed: ZOMBIE_SPEED,
+                facingDirection: side === 0 ? 1 : -1,
+                hp: ZOMBIE_MAX_HP, // Початкове здоров'я зомбі
+                maxHp: ZOMBIE_MAX_HP
+            });
+            lastZombieSpawnTime = performance.now();
+        }
+
+        function updateZombies() {
+            // Спавн зомбі кожні 5 секунд
+            if (performance.now() - lastZombieSpawnTime > ZOMBIE_SPAWN_INTERVAL) {
+                spawnZombie();
+            }
+
+            zombies.forEach(zombie => {
+                // Проста логіка AI: рухатися до гравця по горизонталі
+                if (player.x < zombie.x) {
+                    zombie.x -= zombie.speed;
+                    zombie.facingDirection = -1;
+                } else if (player.x > zombie.x) {
+                    zombie.x += zombie.speed;
+                    zombie.facingDirection = 1;
+                }
+
+                // Перевірка зіткнення зомбі з гравцем (шкода гравцеві)
+                if (player.invulnerabilityTimer === 0 && !player.isDead) {
+                    // Перевірка перетину AABB
+                    if (
+                        zombie.x < player.x + player.width &&
+                        zombie.x + zombie.width > player.x &&
+                        zombie.y < player.y + player.height &&
+                        zombie.y + zombie.height > player.y
+                    ) {
+                        // Зіткнення! Гравець отримує шкоду
+                        player.hp -= ZOMBIE_DAMAGE;
+                        player.invulnerabilityTimer = PLAYER_INVULNERABILITY_DURATION; // Запускаємо таймер невидимості
+
+                        if (player.hp <= 0) {
+                            player.hp = 0;
+                            player.isDead = true;
+                        }
+                    }
+                }
+            });
+        }
+        
+        // --- ЛОГІКА ЗІТКНЕННЯ АТАКИ ---
+
+        function checkAttackCollision() {
+            if (player.attackTimer > 0) {
+                const swordRange = player.width * 2.5; 
+                
+                // Спрощена область атаки меча (трохи попереду гравця)
+                const attackBox = {
+                    x: player.x + (player.facingDirection === 1 ? player.width : -swordRange),
+                    y: player.y + player.height * 0.25,
+                    width: swordRange,
+                    height: player.height * 0.5
+                };
+
+                // Фільтруємо зомбі, видаляючи тих, хто зіткнувся
+                zombies = zombies.filter(zombie => {
+                    // Перевірка перетину AABB (Axis-Aligned Bounding Box)
+                    const isColliding = (
+                        attackBox.x < zombie.x + zombie.width &&
+                        attackBox.x + attackBox.width > zombie.x &&
+                        attackBox.y < zombie.y + zombie.height &&
+                        attackBox.y + attackBox.height > zombie.y
+                    );
+
+                    if (isColliding) {
+                        // Зомбі отримує шкоду
+                        zombie.hp -= PLAYER_DAMAGE; 
+                        
+                        if (zombie.hp <= 0) {
+                            // Зомбі знищено
+                            zombiesKilled++; // Збільшуємо лічильник
+                            return false; 
+                        }
+                    }
+                    return true; // Залишити зомбі
+                });
+            }
+        }
+
+
+        // 4. Функція оновлення стану гри
+        function update() {
+            // Зупиняємо гру, якщо гравець мертвий
+            if (player.isDead) {
+                player.vx = 0;
+                player.vy = 0;
+                return; 
+            }
+            
+            const currentSpeed = canvasWidth / 150; 
+
+            // Обробка таймера невидимості
+            if (player.invulnerabilityTimer > 0) {
+                player.invulnerabilityTimer--;
+            }
+
+            // Оновлення напрямку руху гравця
+            if (keys.left) {
+                player.vx = -currentSpeed;
+                player.facingDirection = -1; // Дивимося ліворуч
+            } else if (keys.right) {
+                player.vx = currentSpeed;
+                player.facingDirection = 1; // Дивимося праворуч
+            } else {
+                player.vx = 0;
+            }
+
+            // Логіка атаки
+            if (player.attackTimer > 0) {
+                player.attackTimer--;
+                checkAttackCollision(); // Перевіряємо зіткнення під час атаки
+            } else if (keys.attack) {
+                player.attackTimer = ATTACK_DURATION;
+                keys.attack = false; 
+            }
+
+            // Стрибок та гравітація
+            if (keys.jump && player.isGrounded) {
+                player.vy = -JUMP_POWER;
+                player.isGrounded = false;
+                player.isJumping = true;
+                keys.jump = false; 
+            }
+
+            if (!player.isGrounded) {
+                player.vy += GRAVITY;
+            }
+
+            // Оновлення позиції гравця
+            player.x += player.vx;
+            player.y += player.vy;
+
+            // Обмеження гравця
+            if (player.x < 0) {
+                player.x = 0;
+            } else if (player.x + player.width > canvasWidth) {
+                player.x = canvasWidth - player.width;
+            }
+
+            // Колізія з землею
+            const groundLevel = canvasHeight * 0.9; 
+            if (player.y + player.height > groundLevel) {
+                player.y = groundLevel - player.height;
+                player.vy = 0; 
+                player.isGrounded = true;
+                player.isJumping = false;
+            } else {
+                player.isGrounded = false;
+            }
+            
+            // Оновлення стану зомбі
+            updateZombies();
+        }
+
+        // 5. Функція малювання меча
+        function drawSword() {
+            ctx.save(); 
+            
+            const swordLength = player.width * 2.5;
+            const swordThickness = player.width * 0.3;
+            const swingFactor = 1 - (player.attackTimer / ATTACK_DURATION); 
+            
+            const maxAngle = Math.PI / 4; 
+            let angle = -maxAngle + (maxAngle * 2 * swingFactor); 
+            
+            let pivotX, pivotY;
+
+            // Встановлюємо точку обертання та обертаємо контекст
+            if (player.facingDirection === 1) { // Праворуч
+                pivotX = player.x + player.width; 
+                pivotY = player.y + player.height * 0.5;
+                ctx.translate(pivotX, pivotY); 
+                ctx.rotate(angle); 
+            } else { // Ліворуч
+                pivotX = player.x; 
+                pivotY = player.y + player.height * 0.5;
+                ctx.translate(pivotX, pivotY); 
+                // Обертання для лівого удару
+                ctx.rotate(angle + Math.PI); 
+            }
+
+            // Малювання руків'я (Handle)
+            ctx.fillStyle = '#475569'; 
+            ctx.fillRect(-swordThickness * 0.5, -swordThickness / 2, swordThickness * 1.5, swordThickness);
+
+            // Малювання леза (Blade)
+            ctx.fillStyle = player.swordColor; 
+            ctx.fillRect(swordThickness * 0.5, -swordThickness / 3, swordLength, swordThickness / 1.5);
+            
+            ctx.restore(); 
+        }
+
+        // 6. Функція малювання HP бару зомбі
+        function drawZombieHpBar(zombie) {
+            const barWidth = zombie.width * 1.2;
+            const barHeight = 5;
+            const barX = zombie.x - (barWidth - zombie.width) / 2;
+            const barY = zombie.y - 15;
+
+            // Фон (чорний)
+            ctx.fillStyle = '#1f2937';
+            ctx.fillRect(barX, barY, barWidth, barHeight);
+
+            // Поточне здоров'я (червоний)
+            const healthPercentage = zombie.hp / zombie.maxHp;
+            ctx.fillStyle = '#dc2626';
+            ctx.fillRect(barX, barY, barWidth * healthPercentage, barHeight);
+
+            // Рамка
+            ctx.strokeStyle = '#9ca3af';
+            ctx.strokeRect(barX, barY, barWidth, barHeight);
+        }
+
+        // 7. Функція малювання зомбі
+        function drawZombies() {
+            const eyeSize = 0.15;
+
+            zombies.forEach(zombie => {
+                ctx.fillStyle = zombie.color;
+                ctx.fillRect(zombie.x, zombie.y, zombie.width, zombie.height);
+                
+                // Малювання очей зомбі
+                ctx.fillStyle = '#1e293b'; 
+                const eyeY = zombie.y + zombie.height * 0.3;
+                
+                // Ліве око
+                ctx.fillRect(zombie.x + zombie.width * 0.25 - zombie.width * eyeSize / 2, eyeY, zombie.width * eyeSize, zombie.width * eyeSize);
+                // Праве око
+                ctx.fillRect(zombie.x + zombie.width * 0.75 - zombie.width * eyeSize / 2, eyeY, zombie.width * eyeSize, zombie.width * eyeSize);
+
+                // Малюємо HP бар
+                drawZombieHpBar(zombie);
+            });
+        }
+        
+        // 8. Функція малювання HP бару гравця (UI)
+        function drawPlayerHpBar() {
+            const barWidth = 200;
+            const barHeight = 20;
+            const margin = 20;
+            const barX = margin;
+            const barY = margin;
+
+            // Фон (чорний)
+            ctx.fillStyle = '#1f2937';
+            ctx.fillRect(barX, barY, barWidth, barHeight);
+
+            // Поточне здоров'я (червоний)
+            const healthPercentage = player.hp / player.maxHp;
+            ctx.fillStyle = '#dc2626';
+            ctx.fillRect(barX, barY, barWidth * healthPercentage, barHeight);
+
+            // Текст HP
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = '14px Inter';
+            ctx.fillText(`Здоровье: ${player.hp}/${player.maxHp}`, barX + 5, barY + 15);
+        }
+
+        // 9. Функція малювання UI
+        function drawUI() {
+            drawPlayerHpBar();
+        }
+
+        // 10. Функція малювання екрану "Гра закінчена"
+        function drawGameOver() {
+            // Темний напівпрозорий фон
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+            ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+
+            // Текст "Гра закінчена"
+            ctx.fillStyle = '#dc2626';
+            ctx.font = 'bold 48px Inter';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText('ИГРА ОКОНЧЕНА', canvasWidth / 2, canvasHeight / 2 - 40);
+
+            // Статистика (Зомбі вбито)
+            ctx.fillStyle = '#f8fafc';
+            ctx.font = '24px Inter';
+            ctx.fillText('Вас одолели зомби!', canvasWidth / 2, canvasHeight / 2 + 10);
+
+            ctx.font = '24px Inter';
+            ctx.fillText(`Зомби уничтожено: ${zombiesKilled}`, canvasWidth / 2, canvasHeight / 2 + 60);
+
+            // Показуємо кнопку рестарту
+            document.getElementById('restartButton').classList.remove('hidden');
+
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic'; // Повертаємо до стандартного
+        }
+
+
+        // 11. Функція малювання
+        function draw() {
+            // Очищення Canvas
+            ctx.clearRect(0, 0, canvasWidth, canvasHeight);
+
+            // Малювання фону (земля/платформа)
+            const groundHeight = canvasHeight * 0.1;
+            const groundY = canvasHeight - groundHeight;
+            ctx.fillStyle = '#10b981'; // Зелена земля
+            ctx.fillRect(0, groundY, canvasWidth, groundHeight);
+
+            // Малювання зомбі
+            drawZombies();
+
+            // Перевірка миготіння гравця (невидимість)
+            const isBlinking = player.invulnerabilityTimer > 0 && Math.floor(player.invulnerabilityTimer / 6) % 2 === 0;
+
+            // Малювання гравця (якщо не миготить)
+            if (!isBlinking) {
+                ctx.fillStyle = player.color;
+                ctx.fillRect(player.x, player.y, player.width, player.height);
+                
+                // Додамо просте "обличчя" для ідентифікації
+                ctx.fillStyle = '#1e293b';
+                const eyeSize = player.width * 0.15;
+                const eyeY = player.y + player.height * 0.3;
+                // Ліве око
+                ctx.fillRect(player.x + player.width * 0.25 - eyeSize / 2, eyeY, eyeSize, eyeSize);
+                // Праве око
+                ctx.fillRect(player.x + player.width * 0.75 - eyeSize / 2, eyeY, eyeSize, eyeSize);
+            }
+            
+            // Малювання меча, якщо гравець атакує
+            if (player.attackTimer > 0) {
+                drawSword();
+            }
+            
+            // Малювання інтерфейсу (HP гравця)
+            drawUI();
+
+            // Екран "Гра закінчена"
+            if (player.isDead) {
+                drawGameOver();
+            }
+        }
+
+        // 12. Ігровий цикл
+        function gameLoop() {
+            update();
+            draw();
+            requestAnimationFrame(gameLoop); // Запит на наступний кадр
+        }
+
+        // Запуск гри
+        window.onload = function () {
+            // Переконаємося, що розмір встановлений перед запуском циклу
+            resizeCanvas();
+            // Запускаємо ігровий цикл
+            gameLoop();
+        };
+
+    </script>
+
+</body>
+</html>
